@@ -1,0 +1,57 @@
+name: Build Arch Linux binary
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install Git
+        run: pacman -Syu --noconfirm --needed git
+
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check whether tagged commit belongs to main
+        id: main_tag
+        run: |
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Tagged commit is not contained in main; skipping build."
+          fi
+
+      - name: Install build tools
+        if: steps.main_tag.outputs.build == 'true'
+        run: pacman -S --noconfirm --needed base-devel rust cargo
+
+      - name: Run tests
+        if: steps.main_tag.outputs.build == 'true'
+        run: cargo test --locked
+
+      - name: Build release binary
+        if: steps.main_tag.outputs.build == 'true'
+        run: cargo build --release --locked
+
+      - name: Package executable
+        if: steps.main_tag.outputs.build == 'true'
+        run: tar -czf lazymenu-cli-x86_64-arch-linux.tar.gz -C target/release lazymenu-cli
+
+      - name: Upload executable
+        if: steps.main_tag.outputs.build == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          path: lazymenu-cli-x86_64-arch-linux.tar.gz
+          archive: false

@@ -1,0 +1,16 @@
+[package]
+name = "lazymenu-cli"
+version = "0.1.0"
+edition = "2024"
+description = "A config-driven interactive command menu"
+license = "MIT"
+
+[[bin]]
+name = "lazymenu-cli"
+path = "src/main.rs"
+
+[dependencies]
+crossterm = "0.29"
+ctrlc = "3.4"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

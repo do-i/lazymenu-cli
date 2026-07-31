@@ -1,0 +1,48 @@
+# This is the default menu used by `lazymenu-cli` in this directory.
+# Replace or add items for your own workflow.
+
+[menu]
+title = "Workspace tools"
+quit_key = "q"
+loop = true
+key_format = "{key})"
+selected_foreground = "black"
+selected_background = "cyan"
+selected_bold = true
+
+[[items]]
+id = "show-directory"
+label = "Show current directory"
+key = "p"
+command = ["pwd"]
+group = "Workspace"
+tags = ["path", "directory", "cwd"]
+description = "Print the absolute path of the current working directory"
+favorite = true
+
+[[items]]
+id = "list-files"
+label = "List files"
+key = "l"
+command = ["ls", "-la"]
+group = "Files"
+tags = ["directory", "files", "hidden"]
+description = "List all files in the current directory with details"
+
+[[items]]
+id = "show-date"
+label = "Show date and time"
+key = "d"
+command = ["date"]
+group = "System"
+tags = ["clock", "time", "today"]
+description = "Display the current local date and time"
+
+[[items]]
+id = "disk-use"
+label = "Show disk use here"
+key = "u"
+command = ["du", "-sh", "."]
+group = "Files"
+tags = ["disk", "size", "storage"]
+description = "Summarize disk usage for the current directory"

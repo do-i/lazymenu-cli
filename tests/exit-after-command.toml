@@ -1,0 +1,15 @@
+[menu]
+title = "Exit after command"
+loop = false
+
+[[items]]
+id = "exit-once"
+label = "Run once"
+key = "x"
+command = ["echo", "exit-once"]
+
+[[items]]
+id = "exit-seven"
+label = "Exit with status seven"
+key = "f"
+command = ["sh", "-c", "exit 7"]

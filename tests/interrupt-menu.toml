@@ -1,0 +1,8 @@
+[menu]
+title = "Interrupt test"
+quit_key = "q"
+
+[[items]]
+label = "Long command"
+key = "x"
+command = ["sleep", "10"]
