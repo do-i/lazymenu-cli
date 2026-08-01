@@ -1,0 +1,22 @@
+pkgname=lazymenu-cli
+pkgver="${PKGVER:-0.1.0}"
+pkgrel=1
+pkgdesc="Config-driven interactive command menu"
+arch=('x86_64')
+url="https://github.com/do-i/lazymenu-cli"
+license=('MIT')
+depends=('glibc')
+makedepends=('cargo')
+backup=('etc/lazymenu-cli/menu.toml')
+options=('!debug')
+
+build() {
+    cd "$startdir/../.."
+    cargo build --release --locked
+}
+
+package() {
+    cd "$startdir/../.."
+    install -Dm755 target/release/lazymenu-cli "$pkgdir/usr/bin/lazymenu-cli"
+    install -Dm644 menu.toml "$pkgdir/etc/lazymenu-cli/menu.toml"
+}

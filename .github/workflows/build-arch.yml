@@ -6,7 +6,7 @@ on:
       - "*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -26,6 +26,7 @@ jobs:
       - name: Check whether tagged commit belongs to main
         id: main_tag
         run: |
+          git fetch origin main:refs/remotes/origin/main
           if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
@@ -35,7 +36,7 @@ jobs:
 
       - name: Install build tools
         if: steps.main_tag.outputs.build == 'true'
-        run: pacman -S --noconfirm --needed base-devel rust cargo
+        run: pacman -S --noconfirm --needed base-devel rust cargo github-cli
 
       - name: Run tests
         if: steps.main_tag.outputs.build == 'true'
@@ -45,13 +46,25 @@ jobs:
         if: steps.main_tag.outputs.build == 'true'
         run: cargo build --release --locked
 
-      - name: Package executable
+      - name: Build Arch package
         if: steps.main_tag.outputs.build == 'true'
-        run: tar -czf lazymenu-cli-x86_64-arch-linux.tar.gz -C target/release lazymenu-cli
+        id: package
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          package_version="${GITHUB_REF_NAME#v}"
+          runuser -u builder -- sh -c 'cd "$1" && env PKGVER="$2" makepkg --cleanbuild --nodeps --noconfirm' sh "$GITHUB_WORKSPACE/packaging/arch" "$package_version"
+          package_file=$(find "$GITHUB_WORKSPACE/packaging/arch" -maxdepth 1 -type f -name 'lazymenu-cli-*.pkg.tar.zst' -print -quit)
+          test -n "$package_file"
+          echo "package_file=$package_file" >> "$GITHUB_OUTPUT"
 
-      - name: Upload executable
+      - name: Publish release package
         if: steps.main_tag.outputs.build == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          path: lazymenu-cli-x86_64-arch-linux.tar.gz
-          archive: false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${{ steps.package.outputs.package_file }}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${{ steps.package.outputs.package_file }}" --generate-notes --verify-tag
+          fi

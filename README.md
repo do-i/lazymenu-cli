@@ -1,6 +1,6 @@
 # lazymenu-cli
 
-`lazymenu-cli` is a native, config-driven command palette. It reads `menu.toml` from the current directory by default and runs commands without embedding project-specific behavior in the executable.
+`lazymenu-cli` is a native, config-driven command palette. It reads `menu.toml` from the current directory first, then falls back to the system menu at `/etc/lazymenu-cli/menu.toml`.
 
 ## Build and install
 
@@ -17,6 +17,14 @@ lazymenu-cli
 ```
 
 Use another config with `--config /path/to/menu.toml`.
+
+`cargo install --path .` installs only the executable, so use `--config` or keep a project-local `menu.toml` when installing from source.
+
+The Arch Linux package also installs the system fallback. Download it from a release and install it with:
+
+```bash
+sudo pacman -U ./lazymenu-cli-<version>-x86_64.pkg.tar.zst
+```
 
 ## Keyboard controls
 
@@ -38,7 +46,7 @@ Favorites appear first, followed by recently used commands and then remaining co
 
 ## Configuration
 
-[`menu.toml`](menu.toml) is a working example. Each item needs `label` and `command`; all other fields are optional.
+[`menu.toml`](menu.toml) is the system fallback installed at `/etc/lazymenu-cli/menu.toml`. A `menu.toml` in the current project directory takes priority. Each item needs `label` and `command`; all other fields are optional.
 
 ```toml
 [menu]

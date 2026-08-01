@@ -1,4 +1,4 @@
-# This is the default menu used by `lazymenu-cli` in this directory.
+# This is the default menu used by `lazymenu-cli` when no project menu.toml exists.
 # Replace or add items for your own workflow.
 
 [menu]

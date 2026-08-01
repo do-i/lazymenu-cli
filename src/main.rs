@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     env, fs,
     io::{self, IsTerminal, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{self, Command},
     sync::{
         Arc,
@@ -24,6 +24,7 @@ const EXIT_INTERRUPTED: i32 = 130;
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 const MAX_MENU_ITEMS: usize = 1_000;
 const MAX_RECENT_ITEMS: usize = 20;
+const SYSTEM_CONFIG_PATH: &str = "/etc/lazymenu-cli/menu.toml";
 
 #[derive(Debug, Deserialize, Default)]
 struct FileConfig {
@@ -103,7 +104,7 @@ struct RecentStore {
 }
 
 struct Options {
-    config_path: String,
+    config_path: Option<PathBuf>,
     dry_run: bool,
     print_items: bool,
 }
@@ -155,7 +156,7 @@ fn config_error(message: impl Into<String>) -> String {
 
 fn parse_options() -> Result<Options, String> {
     let mut options = Options {
-        config_path: "menu.toml".to_owned(),
+        config_path: None,
         dry_run: false,
         print_items: false,
     };
@@ -163,15 +164,17 @@ fn parse_options() -> Result<Options, String> {
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--config" => {
-                options.config_path = arguments
-                    .next()
-                    .ok_or_else(|| config_error("--config needs a path"))?;
+                options.config_path = Some(PathBuf::from(
+                    arguments
+                        .next()
+                        .ok_or_else(|| config_error("--config needs a path"))?,
+                ));
             }
             "--dry-run" => options.dry_run = true,
             "--print" => options.print_items = true,
             "-h" | "--help" => {
                 println!(
-                    "Usage: lazymenu-cli [options]\n\nOptions:\n  --config PATH  TOML config file (default: ./menu.toml)\n  --dry-run      Show commands instead of executing them\n  --print        List configured items and exit\n  -h, --help     Show this help"
+                    "Usage: lazymenu-cli [options]\n\nOptions:\n  --config PATH  TOML config file (default: ./menu.toml, then /etc/lazymenu-cli/menu.toml)\n  --dry-run      Show commands instead of executing them\n  --print        List configured items and exit\n  -h, --help     Show this help"
                 );
                 process::exit(0);
             }
@@ -406,9 +409,29 @@ fn parse_config_text(text: &str) -> Result<MenuConfig, String> {
     })
 }
 
-fn load_config(path: &str) -> Result<MenuConfig, String> {
+fn resolve_config_path(
+    explicit_path: Option<PathBuf>,
+    local_path: &Path,
+    system_path: &Path,
+) -> Result<PathBuf, String> {
+    if let Some(path) = explicit_path {
+        return Ok(path);
+    }
+    if local_path.is_file() {
+        return Ok(local_path.to_owned());
+    }
+    if system_path.is_file() {
+        return Ok(system_path.to_owned());
+    }
+    Err(config_error(format!(
+        "cannot find menu.toml in the current directory or {}",
+        system_path.display()
+    )))
+}
+
+fn load_config(path: &Path) -> Result<MenuConfig, String> {
     let text = fs::read_to_string(path)
-        .map_err(|error| config_error(format!("cannot read {path}: {error}")))?;
+        .map_err(|error| config_error(format!("cannot read {}: {error}", path.display())))?;
     if text.len() > MAX_CONFIG_BYTES {
         return Err(config_error(format!(
             "configuration exceeds the {} byte limit",
@@ -1144,7 +1167,12 @@ fn interactive(config: MenuConfig, dry_run: bool) -> Result<i32, String> {
 fn main() {
     let result = (|| -> Result<i32, String> {
         let options = parse_options()?;
-        let config = load_config(&options.config_path)?;
+        let config_path = resolve_config_path(
+            options.config_path,
+            Path::new("menu.toml"),
+            Path::new(SYSTEM_CONFIG_PATH),
+        )?;
+        let config = load_config(&config_path)?;
         if options.print_items {
             for item in &config.items {
                 println!(
@@ -1171,6 +1199,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn loads_the_default_menu() {
@@ -1178,6 +1207,48 @@ mod tests {
         assert_eq!(config.title, "Workspace tools");
         assert!(config.loop_menu);
         assert_eq!(config.items.len(), 4);
+    }
+
+    #[test]
+    fn project_menu_takes_priority_over_the_system_menu() {
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_nanos();
+        let test_root = env::temp_dir().join(format!(
+            "lazymenu-cli-config-test-{}-{unique_suffix}",
+            process::id()
+        ));
+        fs::create_dir_all(&test_root).expect("create test directory");
+        let local_path = test_root.join("menu.toml");
+        let system_path = test_root.join("system-menu.toml");
+        fs::write(&system_path, "[menu]\n").expect("write system menu");
+
+        assert_eq!(
+            resolve_config_path(None, &local_path, &system_path).expect("system fallback"),
+            system_path
+        );
+
+        fs::write(&local_path, "[menu]\n").expect("write project menu");
+        assert_eq!(
+            resolve_config_path(None, &local_path, &system_path).expect("project menu"),
+            local_path
+        );
+        fs::remove_dir_all(test_root).expect("remove test directory");
+    }
+
+    #[test]
+    fn explicit_config_path_takes_priority_over_existing_menus() {
+        let explicit_path = PathBuf::from("custom-menu.toml");
+        assert_eq!(
+            resolve_config_path(
+                Some(explicit_path.clone()),
+                Path::new("menu.toml"),
+                Path::new(SYSTEM_CONFIG_PATH),
+            )
+            .expect("explicit path"),
+            explicit_path
+        );
     }
 
     #[test]
