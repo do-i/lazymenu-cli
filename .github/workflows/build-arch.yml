@@ -26,6 +26,7 @@ jobs:
       - name: Check whether tagged commit belongs to main
         id: main_tag
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git fetch origin main:refs/remotes/origin/main
           if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "build=true" >> "$GITHUB_OUTPUT"
