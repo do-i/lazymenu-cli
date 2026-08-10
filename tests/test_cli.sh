@@ -39,32 +39,30 @@ rg -Fq 'p) Show current directory' "$TEST_TEMP/layout.log"
     printf '/clock'
     sleep 0.15
     printf '\r'
-    sleep 0.15
-    printf ' '
-    sleep 0.15
-    printf '\033'
-    sleep 0.08
-    printf '\033'
-    sleep 0.08
-    printf '\033'
 } | timeout 5 script -qfec \
     "cd \"$PROJECT_ROOT\" && stty rows 24 cols 100 && XDG_STATE_HOME=\"$TEST_TEMP/state\" \"$RUST_MENU\"" \
     /dev/null > "$TEST_TEMP/search.log"
 rg -q 'Search: clock' "$TEST_TEMP/search.log"
 rg -q 'Running: date' "$TEST_TEMP/search.log"
 rg -q '^id:show-date$' "$TEST_TEMP/state/lazymenu-cli/recent-items"
+if rg -q 'Press any key to return' "$TEST_TEMP/search.log"; then
+    printf 'Menu unexpectedly prompted to return after running a command\n' >&2
+    exit 1
+fi
 
+set +e
 {
     sleep 0.3
     printf 'x'
     sleep 0.5
     printf '\003'
-    sleep 0.5
-    printf 'q'
 } | timeout 5 script -qfec \
     "stty rows 24 cols 100; XDG_STATE_HOME=\"$TEST_TEMP/state\" \"$RUST_MENU\" --config \"$PROJECT_ROOT/tests/interrupt-menu.toml\"" \
     /dev/null > "$TEST_TEMP/interrupt.log"
-rg -q 'interrupted' "$TEST_TEMP/interrupt.log"
+INTERRUPT_STATUS=$?
+set -e
+[[ $INTERRUPT_STATUS -eq 130 ]]
+rg -q 'Running: sleep 10' "$TEST_TEMP/interrupt.log"
 
 printf 'x' | timeout 5 script -qfec \
     "stty rows 24 cols 100; XDG_STATE_HOME=\"$TEST_TEMP/state\" \"$RUST_MENU\" --config \"$PROJECT_ROOT/tests/exit-after-command.toml\"" \
@@ -72,7 +70,7 @@ printf 'x' | timeout 5 script -qfec \
 rg -q 'Running: echo exit-once' "$TEST_TEMP/exit-after-command.log"
 rg -q '^id:exit-once$' "$TEST_TEMP/state/lazymenu-cli/recent-items"
 if rg -q 'Press any key to return' "$TEST_TEMP/exit-after-command.log"; then
-    printf 'Non-looping menu unexpectedly prompted to return\n' >&2
+    printf 'Menu unexpectedly prompted to return after running a command\n' >&2
     exit 1
 fi
 
@@ -84,4 +82,4 @@ EXIT_STATUS=$?
 set -e
 [[ $EXIT_STATUS -eq 7 ]]
 
-printf 'Rust layout, search, XDG recency, Ctrl+C, and menu-loop checks passed\n'
+printf 'Rust layout, search, XDG recency, Ctrl+C, and exit-after-command checks passed\n'

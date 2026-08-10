@@ -42,6 +42,8 @@ In search mode, type a query and use the same navigation keys. Search is case-in
 
 The interactive menu uses the terminal's alternate screen. Quitting restores the terminal contents that were visible before the menu opened instead of leaving the menu drawn on screen or clearing scrollback.
 
+Selecting an item closes the menu. The command then runs in the normal terminal, its output stays in scrollback, and lazymenu-cli exits with the command's status when the command finishes. Run `lazymenu-cli` again to pick another command.
+
 Favorites appear first, followed by recently used commands and then remaining commands ordered by group. `★` marks a favorite and `↻` marks a recent command.
 
 ## Configuration
@@ -52,7 +54,6 @@ Favorites appear first, followed by recently used commands and then remaining co
 [menu]
 title = "Project tools"
 quit_key = "q"
-loop = true
 key_format = "{key})"
 selected_foreground = "black"
 selected_background = "cyan"
@@ -80,8 +81,6 @@ confirm = true
 ```
 
 Array commands execute a program directly. String commands run through the platform shell, allowing pipes, redirects, and shell variables. Treat configs as executable code and only use files you trust.
-
-`loop = true` returns to the menu after each command and is the default when the option is omitted. Set `loop = false` to exit immediately after the selected command finishes. In non-looping mode, lazymenu-cli exits with the command's status and does not show the return-to-menu prompt.
 
 An explicit `id` keeps recent-command tracking stable when labels or commands change. IDs may contain letters, numbers, `.`, `_`, and `-`. Without an ID, lazymenu-cli derives a stable hash from the label and command.
 

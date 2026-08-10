@@ -1,6 +1,5 @@
 [menu]
 title = "Exit after command"
-loop = false
 
 [[items]]
 id = "exit-once"

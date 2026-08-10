@@ -38,8 +38,6 @@ struct FileConfig {
 struct MenuSection {
     title: Option<String>,
     quit_key: Option<String>,
-    #[serde(rename = "loop")]
-    loop_menu: Option<bool>,
     key_format: Option<String>,
     selected_foreground: Option<String>,
     selected_background: Option<String>,
@@ -77,7 +75,6 @@ enum CommandSpec {
 struct MenuConfig {
     title: String,
     quit_key: String,
-    loop_menu: bool,
     key_format: String,
     selected_foreground: Color,
     selected_background: Color,
@@ -259,7 +256,6 @@ fn parse_config_text(text: &str) -> Result<MenuConfig, String> {
         toml::from_str(text).map_err(|error| config_error(format!("invalid TOML: {error}")))?;
     let title = file_config.menu.title.unwrap_or_else(|| "Menu".to_owned());
     let quit_key = file_config.menu.quit_key.unwrap_or_else(|| "q".to_owned());
-    let loop_menu = file_config.menu.loop_menu.unwrap_or(true);
     let key_format = file_config
         .menu
         .key_format
@@ -400,7 +396,6 @@ fn parse_config_text(text: &str) -> Result<MenuConfig, String> {
     Ok(MenuConfig {
         title,
         quit_key,
-        loop_menu,
         key_format,
         selected_foreground,
         selected_background,
@@ -1104,62 +1099,13 @@ fn interactive(config: MenuConfig, dry_run: bool) -> Result<i32, String> {
         running.store(false, Ordering::SeqCst);
         let was_interrupted =
             interrupted.swap(false, Ordering::SeqCst) || status == EXIT_INTERRUPTED;
-        let state_error = if dry_run {
-            None
+        if !dry_run && let Err(error) = recents.mark_used(&item.stable_id) {
+            eprintln!("Command completed; recent state was not saved: {error}");
+        }
+        return Ok(if was_interrupted {
+            EXIT_INTERRUPTED
         } else {
-            recents.mark_used(&item.stable_id).err()
-        };
-        if !config.loop_menu {
-            if let Some(error) = state_error {
-                eprintln!("Command completed; recent state was not saved: {error}");
-            }
-            return Ok(if was_interrupted {
-                EXIT_INTERRUPTED
-            } else {
-                status
-            });
-        }
-        terminal
-            .enter()
-            .map_err(|error| config_error(format!("cannot configure terminal: {error}")))?;
-        let refreshed = ordered_items(&config, &query, &recents);
-        selected = refreshed
-            .iter()
-            .position(|index| *index == item_index)
-            .unwrap_or(0);
-        if was_interrupted {
-            message = Some((format!("'{}' interrupted.", item.label), true));
-            continue;
-        }
-        if status != 0 {
-            message = Some((
-                format!("'{}' failed with status {status}.", item.label),
-                true,
-            ));
-            continue;
-        }
-        let row = terminal::size()
-            .map(|(_, rows)| rows.saturating_sub(1))
-            .unwrap_or(23);
-        execute!(io::stdout(), MoveTo(0, row), Clear(ClearType::CurrentLine))
-            .map_err(|error| config_error(error.to_string()))?;
-        print!("Press any key to return to the menu...");
-        io::stdout()
-            .flush()
-            .map_err(|error| config_error(error.to_string()))?;
-        let answer = next_key().map_err(|error| config_error(error.to_string()))?;
-        if ctrl_c(answer) {
-            return Ok(EXIT_INTERRUPTED);
-        }
-        if answer.code == KeyCode::Esc {
-            return Ok(0);
-        }
-        message = Some(match state_error {
-            Some(error) => (
-                format!("Command completed; recent state was not saved: {error}"),
-                true,
-            ),
-            None => (format!("'{}' completed.", item.label), false),
+            status
         });
     }
 }
@@ -1205,7 +1151,6 @@ mod tests {
     fn loads_the_default_menu() {
         let config = parse_config_text(include_str!("../menu.toml")).expect("default config loads");
         assert_eq!(config.title, "Workspace tools");
-        assert!(config.loop_menu);
         assert_eq!(config.items.len(), 4);
     }
 
@@ -1249,32 +1194,6 @@ mod tests {
             .expect("explicit path"),
             explicit_path
         );
-    }
-
-    #[test]
-    fn menu_loop_defaults_on_and_can_be_disabled() {
-        let default_config = parse_config_text(
-            r#"
-                [[items]]
-                label = "One"
-                command = "echo one"
-            "#,
-        )
-        .expect("default loop behavior loads");
-        assert!(default_config.loop_menu);
-
-        let one_shot_config = parse_config_text(
-            r#"
-                [menu]
-                loop = false
-
-                [[items]]
-                label = "One"
-                command = "echo one"
-            "#,
-        )
-        .expect("one-shot behavior loads");
-        assert!(!one_shot_config.loop_menu);
     }
 
     #[test]

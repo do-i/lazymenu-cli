@@ -4,7 +4,6 @@
 [menu]
 title = "Workspace tools"
 quit_key = "q"
-loop = true
 key_format = "{key})"
 selected_foreground = "black"
 selected_background = "cyan"
