@@ -42,6 +42,8 @@ struct MenuSection {
     selected_foreground: Option<String>,
     selected_background: Option<String>,
     selected_bold: Option<bool>,
+    recent_group: Option<bool>,
+    recent_count: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +81,8 @@ struct MenuConfig {
     selected_foreground: Color,
     selected_background: Color,
     selected_bold: bool,
+    recent_group: bool,
+    recent_count: usize,
     items: Vec<MenuItem>,
 }
 
@@ -95,9 +99,26 @@ struct MenuItem {
     favorite: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Row {
+    Header { expanded: bool },
+    Recent(usize),
+    Separator,
+    Item(usize),
+}
+
+fn row_item_index(row: Row) -> Option<usize> {
+    match row {
+        Row::Recent(index) | Row::Item(index) => Some(index),
+        Row::Header { .. } | Row::Separator => None,
+    }
+}
+
 struct RecentStore {
     path: Option<PathBuf>,
     ids: Vec<String>,
+    expanded: bool,
+    expanded_path: Option<PathBuf>,
 }
 
 struct Options {
@@ -277,6 +298,13 @@ fn parse_config_text(text: &str) -> Result<MenuConfig, String> {
         "selected_background",
     )?;
     let selected_bold = file_config.menu.selected_bold.unwrap_or(true);
+    let recent_group = file_config.menu.recent_group.unwrap_or(true);
+    let recent_count = file_config.menu.recent_count.unwrap_or(3);
+    if !(1..=MAX_RECENT_ITEMS).contains(&recent_count) {
+        return Err(config_error(format!(
+            "menu.recent_count must be between 1 and {MAX_RECENT_ITEMS}"
+        )));
+    }
     if title.trim().is_empty() {
         return Err(config_error("menu.title must be a non-empty string"));
     }
@@ -400,6 +428,8 @@ fn parse_config_text(text: &str) -> Result<MenuConfig, String> {
         selected_foreground,
         selected_background,
         selected_bold,
+        recent_group,
+        recent_count,
         items,
     })
 }
@@ -455,7 +485,11 @@ fn xdg_state_home() -> Option<PathBuf> {
 
 impl RecentStore {
     fn load() -> Self {
-        let path = xdg_state_home().map(|root| root.join("lazymenu-cli/recent-items"));
+        let root = xdg_state_home();
+        let path = root
+            .as_ref()
+            .map(|root| root.join("lazymenu-cli/recent-items"));
+        let expanded_path = root.map(|root| root.join("lazymenu-cli/recent-collapsed"));
         let mut ids = Vec::new();
         if let Some(path) = &path
             && let Ok(contents) = fs::read_to_string(path)
@@ -470,7 +504,29 @@ impl RecentStore {
                 }
             }
         }
-        Self { path, ids }
+        let expanded = expanded_path
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .is_none_or(|contents| contents.trim() != "0");
+        Self {
+            path,
+            ids,
+            expanded,
+            expanded_path,
+        }
+    }
+
+    fn set_expanded(&mut self, expanded: bool) -> io::Result<()> {
+        self.expanded = expanded;
+        let Some(path) = &self.expanded_path else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let temporary = path.with_extension(format!("tmp-{}", process::id()));
+        fs::write(&temporary, if expanded { "1\n" } else { "0\n" })?;
+        fs::rename(temporary, path)
     }
 
     fn rank(&self, stable_id: &str) -> Option<usize> {
@@ -554,7 +610,7 @@ fn item_match_score(item: &MenuItem, query: &str) -> Option<i64> {
     Some(total)
 }
 
-fn ordered_items(config: &MenuConfig, query: &str, recents: &RecentStore) -> Vec<usize> {
+fn ordered_items(config: &MenuConfig, query: &str, recents: &RecentStore) -> Vec<Row> {
     if !query.trim().is_empty() {
         let mut matches: Vec<(usize, i64)> = config
             .items
@@ -579,24 +635,42 @@ fn ordered_items(config: &MenuConfig, query: &str, recents: &RecentStore) -> Vec
                     .cmp(&config.items[*right_index].label)
             })
         });
-        return matches.into_iter().map(|(index, _)| index).collect();
+        return matches
+            .into_iter()
+            .map(|(index, _)| Row::Item(index))
+            .collect();
+    }
+
+    let mut rows = Vec::with_capacity(config.items.len() + 2);
+    if config.recent_group {
+        rows.push(Row::Header {
+            expanded: recents.expanded,
+        });
+        if recents.expanded {
+            let mut shown = 0;
+            for recent_id in &recents.ids {
+                if shown >= config.recent_count {
+                    break;
+                }
+                if let Some(index) = config
+                    .items
+                    .iter()
+                    .position(|item| &item.stable_id == recent_id)
+                {
+                    rows.push(Row::Recent(index));
+                    shown += 1;
+                }
+            }
+            if shown > 0 {
+                rows.push(Row::Separator);
+            }
+        }
     }
 
     let mut ordered = Vec::with_capacity(config.items.len());
     let mut included = vec![false; config.items.len()];
     for (index, item) in config.items.iter().enumerate() {
         if item.favorite {
-            ordered.push(index);
-            included[index] = true;
-        }
-    }
-    for recent_id in &recents.ids {
-        if let Some((index, _)) = config
-            .items
-            .iter()
-            .enumerate()
-            .find(|(index, item)| !included[*index] && &item.stable_id == recent_id)
-        {
             ordered.push(index);
             included[index] = true;
         }
@@ -622,7 +696,8 @@ fn ordered_items(config: &MenuConfig, query: &str, recents: &RecentStore) -> Vec
             .then_with(|| left.cmp(right))
     });
     ordered.extend(remaining);
-    ordered
+    rows.extend(ordered.into_iter().map(Row::Item));
+    rows
 }
 
 fn truncate_text(value: &str, width: usize) -> String {
@@ -653,7 +728,7 @@ fn reset_style(output: &mut impl Write, colors: bool) -> io::Result<()> {
 
 fn render(
     config: &MenuConfig,
-    ordered: &[usize],
+    ordered: &[Row],
     selected: usize,
     search_mode: bool,
     query: &str,
@@ -715,14 +790,14 @@ fn render(
     }
     reset_style(&mut output, colors)?;
 
-    for (visible_index, item_index) in ordered[first_visible..last_visible].iter().enumerate() {
-        let item = &config.items[*item_index];
+    for (visible_index, row) in ordered[first_visible..last_visible].iter().enumerate() {
         let position = first_visible + visible_index;
         queue!(
             output,
             MoveTo(0, u16::try_from(visible_index + 4).unwrap_or(u16::MAX))
         )?;
-        if position == selected && colors {
+        let selectable = !matches!(row, Row::Separator);
+        if position == selected && selectable && colors {
             queue!(
                 output,
                 SetForegroundColor(config.selected_foreground),
@@ -731,32 +806,57 @@ fn render(
             if config.selected_bold {
                 queue!(output, SetAttribute(Attribute::Bold))?;
             }
+        } else if matches!(row, Row::Separator) && colors {
+            queue!(output, SetAttribute(Attribute::Dim))?;
         }
-        let marker = if position == selected { "›" } else { " " };
-        let badge = if item.favorite {
-            "★"
-        } else if recents.contains(&item.stable_id) {
-            "↻"
+        let marker = if position == selected && selectable {
+            "›"
         } else {
             " "
         };
-        let binding = item
-            .key
-            .as_deref()
-            .map(|key| format_binding(&config.key_format, key))
-            .unwrap_or_default();
-        let binding_column = if binding_width == 0 {
-            String::new()
-        } else {
-            format!("{binding:<binding_width$} ")
+        let mut line = match row {
+            Row::Header { expanded } => {
+                let glyph = if *expanded { "▾" } else { "▸" };
+                let count = recents.ids.len().min(config.recent_count);
+                let label = if count == 0 {
+                    "Recent (empty)".to_owned()
+                } else {
+                    format!("Recent ({count})")
+                };
+                format!("{marker} {glyph} {label}")
+            }
+            Row::Separator => format!("  {}", "╌".repeat(24)),
+            Row::Recent(item_index) | Row::Item(item_index) => {
+                let item = &config.items[*item_index];
+                let is_recent_child = matches!(row, Row::Recent(_));
+                let badge = if item.favorite {
+                    "★"
+                } else if recents.contains(&item.stable_id) {
+                    "↻"
+                } else {
+                    " "
+                };
+                let binding = item
+                    .key
+                    .as_deref()
+                    .map(|key| format_binding(&config.key_format, key))
+                    .unwrap_or_default();
+                let binding_column = if binding_width == 0 || is_recent_child {
+                    String::new()
+                } else {
+                    format!("{binding:<binding_width$} ")
+                };
+                let indent = if is_recent_child { "  " } else { "" };
+                let mut line = format!("{marker} {indent}{badge} {binding_column}{}", item.label);
+                if !is_recent_child && let Some(group) = &item.group {
+                    line.push_str("  · ");
+                    line.push_str(group);
+                }
+                line
+            }
         };
-        let mut line = format!("{marker} {badge} {binding_column}{}", item.label);
-        if let Some(group) = &item.group {
-            line.push_str("  · ");
-            line.push_str(group);
-        }
         line = truncate_text(&line, terminal_columns);
-        if position == selected {
+        if position == selected && selectable {
             line.extend(std::iter::repeat_n(
                 ' ',
                 terminal_columns.saturating_sub(line.chars().count()),
@@ -778,8 +878,8 @@ fn render(
     let help_row = terminal_rows.saturating_sub(2);
     let status_row = terminal_rows.saturating_sub(1);
     queue!(output, MoveTo(0, description_row))?;
-    if let Some(item_index) = ordered.get(selected) {
-        let item = &config.items[*item_index];
+    if let Some(item_index) = ordered.get(selected).copied().and_then(row_item_index) {
+        let item = &config.items[item_index];
         let description = item
             .description
             .as_deref()
@@ -799,7 +899,7 @@ fn render(
     let help = if search_mode {
         "Type to filter • ↑/↓ select • PgUp/PgDn • Enter run • Esc clear/close"
     } else {
-        "↑/↓ or j/k • PgUp/PgDn • Home/End • / search • Enter run • q/Esc quit"
+        "↑/↓ or j/k • PgUp/PgDn • Home/End • / search • Enter run/toggle • ←/→ toggle Recent • q/Esc quit"
     };
     write!(output, "{}", truncate_text(help, terminal_columns))?;
     reset_style(&mut output, colors)?;
@@ -820,12 +920,19 @@ fn render(
             queue!(output, SetAttribute(Attribute::Dim))?;
         }
         let noun = if search_mode { "matches" } else { "commands" };
+        let command_total = if search_mode {
+            ordered.len()
+        } else {
+            ordered
+                .iter()
+                .filter(|row| matches!(row, Row::Item(_)))
+                .count()
+        };
         let status = if ordered.is_empty() {
             format!("0 {noun}")
         } else {
             format!(
-                "{} {noun} • items {}–{}/{}",
-                ordered.len(),
+                "{command_total} {noun} • items {}–{}/{}",
                 first_visible + 1,
                 last_visible,
                 ordered.len()
@@ -874,6 +981,18 @@ fn page_size() -> usize {
     terminal::size()
         .map(|(_, rows)| usize::from(rows.max(10).saturating_sub(8)).max(1))
         .unwrap_or(16)
+}
+
+fn skip_separator(rows: &[Row], index: usize, upward: bool) -> usize {
+    if matches!(rows.get(index), Some(Row::Separator)) {
+        if upward {
+            index.saturating_sub(1)
+        } else {
+            (index + 1).min(rows.len().saturating_sub(1))
+        }
+    } else {
+        index
+    }
 }
 
 fn run_command(item: &MenuItem, dry_run: bool, interrupted: &AtomicBool) -> i32 {
@@ -1000,7 +1119,9 @@ fn interactive(config: MenuConfig, dry_run: bool) -> Result<i32, String> {
                 }
                 KeyCode::Home => selected = 0,
                 KeyCode::End => selected = ordered.len().saturating_sub(1),
-                KeyCode::Enter => activate = ordered.get(selected).copied(),
+                KeyCode::Enter => {
+                    activate = ordered.get(selected).copied().and_then(row_item_index)
+                }
                 _ => {
                     if let Some(character) = key_character(key) {
                         query.push(character);
@@ -1022,20 +1143,51 @@ fn interactive(config: MenuConfig, dry_run: bool) -> Result<i32, String> {
                     selected = 0;
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    selected = selected.saturating_sub(1);
+                    selected = skip_separator(&ordered, selected.saturating_sub(1), true);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if selected + 1 < ordered.len() {
-                        selected += 1;
+                        selected = skip_separator(&ordered, selected + 1, false);
                     }
                 }
-                KeyCode::PageUp => selected = selected.saturating_sub(page_size()),
+                KeyCode::PageUp => {
+                    selected = skip_separator(&ordered, selected.saturating_sub(page_size()), true);
+                }
                 KeyCode::PageDown => {
-                    selected = (selected + page_size()).min(ordered.len().saturating_sub(1));
+                    selected = skip_separator(
+                        &ordered,
+                        (selected + page_size()).min(ordered.len().saturating_sub(1)),
+                        false,
+                    );
                 }
                 KeyCode::Home => selected = 0,
                 KeyCode::End => selected = ordered.len().saturating_sub(1),
-                KeyCode::Enter => activate = ordered.get(selected).copied(),
+                KeyCode::Right
+                    if matches!(
+                        ordered.get(selected),
+                        Some(&Row::Header { expanded: false })
+                    ) =>
+                {
+                    if let Err(error) = recents.set_expanded(true) {
+                        message = Some((format!("Recent state not saved: {error}"), true));
+                    }
+                }
+                KeyCode::Left
+                    if matches!(ordered.get(selected), Some(&Row::Header { expanded: true })) =>
+                {
+                    if let Err(error) = recents.set_expanded(false) {
+                        message = Some((format!("Recent state not saved: {error}"), true));
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(&Row::Header { expanded }) = ordered.get(selected) {
+                        if let Err(error) = recents.set_expanded(!expanded) {
+                            message = Some((format!("Recent state not saved: {error}"), true));
+                        }
+                    } else {
+                        activate = ordered.get(selected).copied().and_then(row_item_index);
+                    }
+                }
                 _ => {
                     activate = text.as_deref().and_then(|pressed| {
                         config.items.iter().position(|item| {
@@ -1047,7 +1199,7 @@ fn interactive(config: MenuConfig, dry_run: bool) -> Result<i32, String> {
                     if let Some(item_index) = activate {
                         selected = ordered
                             .iter()
-                            .position(|index| *index == item_index)
+                            .position(|row| matches!(row, Row::Item(index) if *index == item_index))
                             .unwrap_or(0);
                     } else {
                         message = Some(("Unknown key. Press / to search.".to_owned(), true));
@@ -1306,16 +1458,97 @@ mod tests {
         );
     }
 
+    fn item_index(config: &MenuConfig, stable_id: &str) -> usize {
+        config
+            .items
+            .iter()
+            .position(|item| item.stable_id == stable_id)
+            .expect("item exists")
+    }
+
     #[test]
-    fn favorites_and_recents_are_ranked_first() {
+    fn recents_are_pinned_in_a_folder_without_reordering_the_base_list() {
         let config = parse_config_text(include_str!("../menu.toml")).expect("default config loads");
         let recents = RecentStore {
             path: None,
             ids: vec!["id:show-date".to_owned()],
+            expanded: true,
+            expanded_path: None,
         };
         let ordered = ordered_items(&config, "", &recents);
-        assert_eq!(config.items[ordered[0]].stable_id, "id:show-directory");
-        assert_eq!(config.items[ordered[1]].stable_id, "id:show-date");
+        let show_date = item_index(&config, "id:show-date");
+        let show_directory = item_index(&config, "id:show-directory");
+        assert_eq!(ordered[0], Row::Header { expanded: true });
+        assert_eq!(ordered[1], Row::Recent(show_date));
+        assert_eq!(ordered[2], Row::Separator);
+        // Favorites still come first in the base list, unaffected by recency.
+        assert_eq!(ordered[3], Row::Item(show_directory));
+        // The recent item keeps its normal, stable position in the base list too.
+        assert!(ordered.contains(&Row::Item(show_date)));
+    }
+
+    #[test]
+    fn collapsing_the_recent_folder_hides_its_children() {
+        let config = parse_config_text(include_str!("../menu.toml")).expect("default config loads");
+        let recents = RecentStore {
+            path: None,
+            ids: vec!["id:show-date".to_owned()],
+            expanded: false,
+            expanded_path: None,
+        };
+        let ordered = ordered_items(&config, "", &recents);
+        assert_eq!(ordered[0], Row::Header { expanded: false });
+        assert!(!ordered.iter().any(|row| matches!(row, Row::Recent(_))));
+        assert!(!ordered.iter().any(|row| matches!(row, Row::Separator)));
+    }
+
+    #[test]
+    fn recent_count_limits_folder_children() {
+        let mut config =
+            parse_config_text(include_str!("../menu.toml")).expect("default config loads");
+        config.recent_count = 1;
+        let recents = RecentStore {
+            path: None,
+            ids: vec!["id:show-date".to_owned(), "id:disk-use".to_owned()],
+            expanded: true,
+            expanded_path: None,
+        };
+        let ordered = ordered_items(&config, "", &recents);
+        let recent_rows = ordered
+            .iter()
+            .filter(|row| matches!(row, Row::Recent(_)))
+            .count();
+        assert_eq!(recent_rows, 1);
+    }
+
+    #[test]
+    fn disabling_recent_group_removes_the_header() {
+        let mut config =
+            parse_config_text(include_str!("../menu.toml")).expect("default config loads");
+        config.recent_group = false;
+        let recents = RecentStore {
+            path: None,
+            ids: vec!["id:show-date".to_owned()],
+            expanded: true,
+            expanded_path: None,
+        };
+        let ordered = ordered_items(&config, "", &recents);
+        assert!(!ordered.iter().any(|row| matches!(row, Row::Header { .. })));
+    }
+
+    #[test]
+    fn rejects_invalid_recent_count() {
+        let result = parse_config_text(
+            r#"
+                [menu]
+                recent_count = 0
+
+                [[items]]
+                label = "One"
+                command = "echo one"
+            "#,
+        );
+        assert!(result.unwrap_err().contains("recent_count"));
     }
 
     #[test]

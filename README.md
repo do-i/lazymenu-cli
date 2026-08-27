@@ -34,7 +34,8 @@ In browse mode:
 - `PageUp`/`PageDown` moves one visible page.
 - `Home`/`End` jumps to the first or last result.
 - `/` opens search.
-- `Enter` runs the selected command.
+- `Enter` runs the selected command, or toggles the Recent folder when it is selected.
+- `←`/`→` collapses/expands the Recent folder when it is selected.
 - Configured one-character bindings run items directly.
 - The configured quit key (default `q`), `Esc`, or `Ctrl+C` exits.
 
@@ -44,7 +45,9 @@ The interactive menu uses the terminal's alternate screen. Quitting restores the
 
 Selecting an item closes the menu. The command then runs in the normal terminal, its output stays in scrollback, and lazymenu-cli exits with the command's status when the command finishes. Run `lazymenu-cli` again to pick another command.
 
-Favorites appear first, followed by recently used commands and then remaining commands ordered by group. `★` marks a favorite and `↻` marks a recent command.
+Favorites appear first, then the rest of the list is ordered by group; this order is stable across runs and does not change as your recent-command history changes. `★` marks a favorite and `↻` marks a recent command in place, without moving it.
+
+A collapsible **Recent** folder is always pinned at the top of the list, above favorites. Expand it to see the last few unique commands you ran (most recent first); select one there and press `Enter` to run it, exactly like any other item. Collapse the folder to hide recents entirely — your choice is remembered across launches. This keeps recency visible without reshuffling the rest of the menu on every run.
 
 ## Configuration
 
@@ -58,6 +61,8 @@ key_format = "{key})"
 selected_foreground = "black"
 selected_background = "cyan"
 selected_bold = true
+recent_group = true
+recent_count = 3
 
 [[items]]
 id = "run-tests"
@@ -92,6 +97,8 @@ The selected row is a full-width color bar. `selected_foreground` and `selected_
 
 Configs are limited to 1 MiB and 1,000 items.
 
+Set `recent_group = false` to remove the Recent folder entirely. `recent_count` controls how many unique recent commands it shows when expanded (default 3, must be between 1 and 20).
+
 ## Recent commands and XDG state
 
 The 20 most recently used commands are stored as stable IDs at:
@@ -105,6 +112,8 @@ If `XDG_STATE_HOME` is unset or not absolute, the XDG default is used:
 ```text
 $HOME/.local/state/lazymenu-cli/recent-items
 ```
+
+Whether the Recent folder is expanded or collapsed is stored alongside it, at `$XDG_STATE_HOME/lazymenu-cli/recent-collapsed` (or the `$HOME/.local/state` equivalent).
 
 State write failures never prevent commands from running; the menu reports the failure in its status line.
 
